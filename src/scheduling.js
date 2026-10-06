@@ -357,6 +357,13 @@ function interruptionHoldMinute(segments) {
  * - 实际登记时间（实际开始/完成）永不改变；已完成项不做顺延；
  * - 已开始未完成项：按时长推算结束与停排前填写的预计结束顺延中断重叠分钟，且不得早于最近恢复时刻；
  * - 未开始项：重算开始不得早于最近恢复时刻（停排中为本次停排时刻）；其预计结束已在停排时清除。
+ *
+ * 预计结束倒挂（未开始项）：前置延误使重算开始晚于原登记预计结束时，
+ * - 原登记预计结束（estimatedEnd）与登记行版本保留不动，仅标记 estimatedEndStale=true（预计结束已过期）；
+ * - 待执行结束改以「重算开始 + 该项计划时长」暂算（schedEndProvisional=true），后继顺延、
+ *   岗位冲突、共享资源告警与排期来源一律使用同一暂算结束，杜绝后继排期倒退；
+ * - 执行人重新填报不早于重算开始的新预计结束后恢复正常口径（estimatedEndStale=false）。
+ *
  * 返回 { cues: [...], conflicts: [{position,a,b,message}], orderProblem: null|message }
  */
 function computeLive(publishedCues, deps, regMap, interruptions) {
@@ -396,6 +403,8 @@ function computeLive(publishedCues, deps, regMap, interruptions) {
     const skipped = r.skipped === true || r.skipped === 1;
 
     let status, schedStart, schedEnd, effStart, pauseShift = 0, pauseHold = null;
+    // estimatedStale: 未开始项原登记预计结束早于重算开始（已过期）；schedEnd 改按重算开始+时长暂算
+    let estimatedStale = false;
 
     if (skipped) {
       // 已跳过：只展示，不产生待执行时段；其前置约束对后项不再生效（前置不可执行导致本项一同跳过）
@@ -430,8 +439,16 @@ function computeLive(publishedCues, deps, regMap, interruptions) {
       pauseHold = held ? start : null;
       effStart = start;
       schedStart = start;
-      // 未开始项原有预计结束已在停排时清除：无预计结束时按重算开始 + 时长推算
-      schedEnd = ee !== null ? ee : start + cue.duration;
+      // 倒挂处理：原登记预计结束不晚于重算开始即已过期——保留原登记与行版本，
+      // 标记 estimatedEndStale，待执行结束以重算开始 + 该项计划时长暂算；
+      // 后继顺延 / 岗位冲突 / 共享资源告警 / 排期来源统一使用该暂算结束，避免后继倒退。
+      if (ee !== null && ee < start) {
+        estimatedStale = true;
+        schedEnd = start + cue.duration;
+      } else {
+        // 未开始项原有预计结束已在停排时清除：无预计结束（或预计结束仍有效）时按重算开始 + 时长推算
+        schedEnd = ee !== null ? ee : start + cue.duration;
+      }
     }
 
     calc.set(id, {
@@ -443,6 +460,10 @@ function computeLive(publishedCues, deps, regMap, interruptions) {
       skipped,
       schedStart,
       schedEnd,
+      // 未开始项预计结束倒挂时为 true：原登记预计结束保留但已过期，schedEnd 改为重算开始+计划时长的暂算结束；
+      // 后继顺延、岗位冲突、共享资源告警与排期来源均使用同一暂算结束。填报有效新预计结束后恢复 false
+      estimatedEndStale: estimatedStale,
+      schedEndProvisional: estimatedStale,
       pauseShift,
       pauseHold,
       interrupted: pauseShift > 0 || pauseHold !== null,
@@ -552,6 +573,15 @@ function explainSchedule(publishedCues, deps, regMap, cueRef, skipReasons, inter
       node.endSource = 'actual';
       node.endSourceLabel = '实际完成';
       node.endDetail = `实际开始 ${minToTime(p.actualStart)}，实际完成 ${minToTime(p.actualEnd)}`;
+    } else if (p.status === 'PENDING' && p.estimatedEndStale === true) {
+      // 倒挂前置：原登记预计结束已早于重算开始（已过期，保留登记与行版本），
+      // 结束改以重算开始 + 计划时长暂算；来源解释与现场重算同一口径
+      node.endSource = 'estimated-stale';
+      node.endSourceLabel = '预计结束已过期·暂算';
+      node.estimatedEndStale = true;
+      node.schedEndProvisional = true;
+      node.endDetail = `原登记预计结束 ${minToTime(p.estimatedEnd)} 已早于重算开始 ${minToTime(p.schedStart)}（已过期，保留原登记），暂以重算开始 + 时长 ${p.duration} 分算得结束 ${minToTime(p.schedEnd)}`;
+      if (!stack.includes(p.id)) node.start = startExplain(p, stack.concat(p.id));
     } else if (p.estimatedEnd !== null && p.estimatedEnd !== undefined) {
       node.endSource = 'estimated';
       node.endSourceLabel = '预计结束';
@@ -639,6 +669,9 @@ function explainSchedule(publishedCues, deps, regMap, cueRef, skipReasons, inter
       schedEnd: target.schedEnd,
       schedEndText: minToTime(target.schedEnd),
       estimatedEndText: minToTime(target.estimatedEnd),
+      // 目标项自身的预计结束是否已过期（倒挂暂算结束）；后继顺延/冲突/资源告警均使用暂算结束
+      estimatedEndStale: target.estimatedEndStale === true,
+      schedEndProvisional: target.schedEndProvisional === true,
       delayed: target.delayed,
     },
     baselineText: minToTime(target.plannedStart),
@@ -771,8 +804,14 @@ function simulateWhatIf(publishedCues, deps, regMap, assumptions, interruptions,
         plannedEndText: minToTime(c.plannedStart + c.duration),
         baselineStartText: isActive ? minToTime(b.schedStart) : null,
         baselineEndText: isActive ? minToTime(b.schedEnd) : null,
+        baselineEndProvisional: isActive ? b.estimatedEndStale === true : false,
+        baselineEstimatedEndText: isActive ? minToTime(b.estimatedEnd) : null,
+        baselineEstimatedEndStale: isActive ? b.estimatedEndStale === true : false,
         scenarioStartText: isActive ? minToTime(c.schedStart) : null,
         scenarioEndText: isActive ? minToTime(c.schedEnd) : null,
+        scenarioEndProvisional: isActive ? c.estimatedEndStale === true : false,
+        scenarioEstimatedEndText: isActive ? minToTime(c.estimatedEnd) : null,
+        scenarioEstimatedEndStale: isActive ? c.estimatedEndStale === true : false,
         startDeltaMinutes: startDelta,
         endDeltaMinutes: endDelta,
         changed: isActive && (startDelta !== 0 || endDelta !== 0),

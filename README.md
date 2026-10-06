@@ -249,6 +249,7 @@ npm start
   - **开始**：登记实际开始（默认取当前时间，可手填 HH:MM）；
   - **完成**：登记实际完成（须先开始，完成时刻不得早于开始）；
   - **预计结束**：未开始或已开始均可登记，不得早于（实际或原计划）开始；
+  - **预计结束倒挂（本轮新增）**：未开始项曾按原计划登记预计结束、前置随后延误，使**重算开始晚于原预计结束**时，原预计结束在「预计结束」列划线标注「**已过期**」（**原登记与行版本保留**），「重算结束」列改按**重算开始 + 该项计划时长**给出「**⏱ 暂算结束**」；后继顺延、岗位冲突、共享资源告警与「来源」解释**统一使用该暂算结束**（不再出现后继排期倒退）。该行按钮变为「**重报预计**」，提交的新预计结束**不得早于提交时该项重算开始**，否则 400 `BAD_INPUT` **整体拒绝**（不产生登记，也不产生顺延确认记录）；填报不早于重算开始的新值后恢复正常口径。
 - **代班识别**：若你被指定为某岗位代班，页面顶部黄色横幅提示「你正在代班岗位…」，该岗位行同样高亮并可登记（自己原有岗位权限保留）；若你的岗位被他人代班，横幅提示登记权已移交，本岗位行显示「已由 XX 代班」且不再出现操作按钮；
 - 非本岗位提示项只读；对非最新（已归档）版本不能登记；
 - **联排停排期间本岗位行显示「⛔ 停排中，暂停登记」**：开始 / 预计结束 / 完成提交均会被拒绝（409），新签认也暂停；恢复联排后排期自动顺延（未开始项不早于恢复时刻），停排前的放行双签已失效，**需双方重新签认**后才能开始需放行项；
@@ -272,6 +273,7 @@ npm start
 - **依赖链跳过同样以链中每项的登记行版本号为乐观锁**：确认必须回传预览所见的每个 `rowVersion`；预览后任一项被登记或更正（行版本推进），整次跳过 409 拒绝；跳过成功后新跳过项行版本 +1（已跳过项不重复更新）。
 - **现场顺延预演（只读）在单次事务内同时核对所见执行版与全部提示项登记行版本**：请求必须携带 `versionId` 与 `rows: [{cueRef, rowVersion}]`（全部提示项，一项不能少）；版本已归档、行集合与当前版本不一致、或任一登记行版本已推进，均以 409 `WHATIF_STALE` 整体拒绝并逐项给出当前行版本，不会返回基于混合时点的预演结果；预演不推进任何版本号、不写入数据，可对同一快照反复试算。
 - **放行签认以「目标 + 直接前置项登记行版本快照」为一致性基准**：签认提交校验目标登记行版本（过期 409 `VERSION_CONFLICT`）；签认本身**不推进登记行版本**，因此两类签认可先后基于同一行版本完成。此后目标或任一直接前置项的登记行版本推进（岗位登记、舞监更正、跳过）即令相关签认失效；开始提交在同一事务内复核当前执行版、行版本、权限与两类签认有效性，缺签或失效以 409 `SIGNOFF_MISSING` 整体拒绝，不写入部分结果。
+- **预计结束倒挂不推进任何版本号（本轮新增）**：倒挂是重算时的只读判定（原预计结束 < 重算开始），**不修改登记、不推进行版本、不留更正痕迹**；仅在现场负载每行新增 `estimatedEndStale`（原预计结束已过期）与 `schedEndProvisional`（重算结束为暂算值）两个布尔标记。执行人才是唯一解除动作：重新填报**不早于提交时重算开始**的预计结束（同一事务校验，非法整体拒绝，不留登记与顺延确认痕），行版本随新登记正常 +1。
 
 ## 五、配置项（环境变量）
 
@@ -322,21 +324,21 @@ SESSION_SECRET=your-long-random-secret
 | POST/DELETE | `/api/draft/deps[/:id]` | 舞监 | 前置关系增删（校验草稿版本号） |
 | GET | `/api/publish/handover/preview` | 舞监 | **发布前交接预览**：旧执行版已完成项的交接资格、不合格原因、旧登记行版本；无旧版时列表为空 |
 | POST | `/api/publish` | 舞监 | 发布只读版本；冲突返回 422 并列出冲突项（**含 `RESOURCE_OVERLOAD`：资源、超额时段、相关提示项**）；可带 `handover` 交接选择，资格/版本失效返回 409 `HANDOVER_STALE`；**当前执行版停排中须先恢复，否则 409 `INTERRUPTION_ACTIVE`** |
-| GET | `/api/live` | 已登录 | 当前最新版本的现场重算结果（含每行更正历史 `corrections`、跳过留痕 `skip`、放行签认 `release`、本版代班记录 `deputies`、**联排中断记录 `interruptions` 与 `activeInterruption`，及每行中断影响 `interrupted/pauseShiftMinutes/pauseHoldText`**；执行账号另含有效岗位 `myPositions`；**另含发布时冻结的共享资源 `resources`、每行 `resourceUsages` 与现场资源超额告警 `resourceAlerts`**） |
+| GET | `/api/live` | 已登录 | 当前最新版本的现场重算结果（含每行更正历史 `corrections`、跳过留痕 `skip`、放行签认 `release`、本版代班记录 `deputies`、**联排中断记录 `interruptions` 与 `activeInterruption`，及每行中断影响 `interrupted/pauseShiftMinutes/pauseHoldText`**；**倒挂未开始项另含 `estimatedEndStale`（原预计结束已过期，登记保留）与 `schedEndProvisional`（重算结束按重算开始+计划时长暂算，后继顺延/冲突/资源/来源同口径）**；执行账号另含有效岗位 `myPositions`；**另含发布时冻结的共享资源 `resources`、每行 `resourceUsages` 与现场资源超额告警 `resourceAlerts`**） |
 | GET | `/api/live/deputies` | 已登录 | 当前执行版代班记录（含已撤销历史）；舞监另返回可选岗位 `positions` 与执行账号 `operators` |
 | POST | `/api/live/deputies` | 舞监 | 启用岗位代班（仅当前执行版）；重复启用 409 `DEPUTY_EXISTS`；同事务使失去登记权者的签认失效 |
 | POST | `/api/live/deputies/revoke` | 舞监 | 撤销岗位在任代班；无在任代班 409 `NO_ACTIVE_DEPUTY`；同事务使失去登记权者的签认失效 |
 | POST | `/api/live/signoffs` | 执行岗位 / 舞监 | **双人放行签认**（仅当前执行版、需放行且未开始项）：`kind=operator` 执行人签认就绪（须当下有该岗位登记权）、`kind=sm` 舞监签认可执行；记录签认人、时间及目标与直接前置项登记行版本快照；重复签认 409 `SIGNOFF_EXISTS`，已开始/完成 409 `SIGNOFF_STATE`，已跳过 409 `CUE_SKIPPED`，未标记需放行 400 `RELEASE_NOT_REQUIRED`，**停排期间 409 `INTERRUPTION_ACTIVE`** |
-| POST | `/api/registrations` | 执行岗位 | start / complete / estimate（同一事务内复核当前版、代班授权、行版本号；已跳过项 409 `CUE_SKIPPED`；需放行项 start 前须双签齐备，否则 409 `SIGNOFF_MISSING`；**停排期间 start/estimate/complete 均 409 `INTERRUPTION_ACTIVE`**） |
+| POST | `/api/registrations` | 执行岗位 | start / complete / estimate（同一事务内复核当前版、代班授权、行版本号；已跳过项 409 `CUE_SKIPPED`；需放行项 start 前须双签齐备，否则 409 `SIGNOFF_MISSING`；**停排期间 start/estimate/complete 均 409 `INTERRUPTION_ACTIVE`**；**estimate 下界：已开始项为实际开始，未开始项为提交时该项重算开始——倒挂重报早于重算开始返回 400 `BAD_INPUT`（附 `lowerBound/lowerBoundText`），整体拒绝、不产生登记或顺延确认记录**） |
 | POST | `/api/registrations/corrections` | 舞监 | 更正/清除单个登记字段（校验行版本号、仅当前执行版本；级联清除与一致性校验；原子写入更正历史；已跳过项 409 `CUE_SKIPPED`；**更正后的实际时刻落入任一段停排区间 400 `INTERRUPTION_TIME_CONFLICT`；停排期间仍可更正**） |
 | GET | `/api/live/skips/preview` | 舞监 | **依赖链跳过影响预览**（仅当前执行版）：根项及沿前置可达的全部后继、各项行版本、阻断项与已跳过原因 |
 | POST | `/api/live/skips` | 舞监 | **确认跳过整条依赖链**（非空原因 + 预览所见行版本；事务内核验，阻断/版本变化整体拒绝；首跳清除预计结束并留痕，已跳过项不重复留痕） |
-| POST | `/api/live/whatif` | 舞监 | **现场顺延预演**（仅当前执行版，只读）：携带 `versionId`、全部登记行 `rows[]` 与一项或多项假设 `assumptions[]`；同一快照同时套用全部假设重算，返回逐项待执行开始/结束差异与新增/消失/仍存在的同岗位冲突；**另按现场口径返回共享资源告警的新增 / 消失 / 持续（`resourceAlertsAdded/Removed/Kept`）**；版本或任一行变化整体 409 `WHATIF_STALE`，无效假设 400 `WHATIF_INVALID`，不写入任何数据 |
+| POST | `/api/live/whatif` | 舞监 | **现场顺延预演**（仅当前执行版，只读）：携带 `versionId`、全部登记行 `rows[]` 与一项或多项假设 `assumptions[]`；同一快照同时套用全部假设重算，返回逐项待执行开始/结束差异与新增/消失/仍存在的同岗位冲突；**倒挂项的基线/预演时段分别附 `baseline/scenarioEndProvisional` 与 `baseline/scenarioEstimatedEndStale`（暂算结束与原预计结束已过期标记），与现场同一口径**；**另按现场口径返回共享资源告警的新增 / 消失 / 持续（`resourceAlertsAdded/Removed/Kept`）**；版本或任一行变化整体 409 `WHATIF_STALE`，无效假设 400 `WHATIF_INVALID`，不写入任何数据 |
 | GET | `/api/live/interruptions` | 已登录 | **联排中断记录**（当前执行版）：全部停排段（留痕，最新在前）与 `activeInterruption`（进行中或 null） |
 | POST | `/api/live/interruptions` | 舞监 | **停排**（仅当前执行版）：`{versionId, pauseText:"HH:MM", reason}`；同版已有进行中停排 409 `INTERRUPTION_EXISTS`；时刻不递增/覆盖已登记实际时刻 400；停排事务内清除未开始项预计结束（行版本+1、留痕）、有效双签整体失效 |
 | POST | `/api/live/interruptions/resume` | 舞监 | **恢复**（仅当前执行版）：`{versionId, resumeText:"HH:MM"}`；无进行中停排 409 `NO_ACTIVE_INTERRUPTION`；时刻不晚于停排/覆盖实际时刻 400；恢复后按中断顺延规则重算（实际登记时间不变） |
 | GET | `/api/versions` `/api/versions/:id` | 已登录 | 版本列表（含 `skipCount`、**`interruptionCount` / `interruptionActive`、`noticePendingCount` 顺延待确认数（舞监=全岗位，执行账号=本岗位）**、`reviewSealed` / `reviewSealedAt` 复盘封存标记）与历史回看（每行含更正历史 `corrections`、跳过留痕 `skip`、放行签认 `release` 与**中断影响标注**，**版本含 `interruptions` 停排记录与 `activeInterruption`**，含全部签认记录 `release.records` 及失效原因，只读；**另含冻结共享资源 `resources`、每行 `resourceUsages` 与按该版当前重算口径的 `resourceAlerts`；升级前发布的旧版无资源数据，三者为空，沿用原有行为**） |
-| GET | `/api/versions/:id/cues/:cueRef/explain` | 已登录 | **排期开始来源解释**（当前执行版与历史版本通用，只读）：以原计划开始为基线，达到最终最大约束时刻的直接前置全部列出并逐层追溯来源；目标已开始/已完成/已跳过返回明确说明 |
+| GET | `/api/versions/:id/cues/:cueRef/explain` | 已登录 | **排期开始来源解释**（当前执行版与历史版本通用，只读）：以原计划开始为基线，达到最终最大约束时刻的直接前置全部列出并逐层追溯来源；**倒挂前置的结束来源标注「预计结束已过期·暂算」（`endSource=estimated-stale`，给原登记预计结束、重算开始与暂算结束）**；目标项自身倒挂时 `cue.estimatedEndStale=true`；目标已开始/已完成/已跳过返回明确说明 |
 | GET | `/api/live/review` | 舞监 | **当前执行版复盘实时预览**：逐项状态（本版完成 / 交接自旧版完成 / 进行中 / 未开始 / 已跳过）、开始有符号偏差、实际持续分钟、停排扣除分钟、净执行分钟，及按岗位汇总与封存依据 `basis`；无版本 409 `NO_LIVE_VERSION` |
 | POST | `/api/live/review/seal` | 舞监 | **封存当前执行版复盘**：`{versionId, note?, basis}`（basis 取自预览，含全部登记行版本与停排状态）；任一依据变化 409 `REVIEW_BASIS_STALE` 整体拒绝，归档版 409 `REVIEW_VERSION_STALE`，每版重复封存 409 `REVIEW_ALREADY_SEALED`；明细与汇总作为不可改写快照保存 |
 | GET | `/api/versions/:id/review` | 舞监 | **历史版复盘回看**：该版实时明细 `live` 与已封存快照 `snapshot`（未封存为 null），并带封存依据与封存信息 |
@@ -1610,3 +1612,118 @@ curl -b sm.cookie -s http://localhost:3000/api/versions
 - 「发布版本」回看页列出该版顺延变更记录（只读，归档版标注不能确认），版本列表新增「待确认」计数列。
 
 
+## 十八、预计结束倒挂重报 API 调用示例（本轮新增）
+
+背景：未开始项曾按原计划登记预计结束，其前置项随后延误，使该项**重算开始晚于原登记预计结束**（倒挂）。系统**不改登记、不推进行版本**，而是把原预计结束标记为已过期，现场结束改按**重算开始 + 该项计划时长暂算**，后继顺延 / 岗位冲突 / 共享资源告警 / 排期来源全部使用该暂算结束；执行人重新填报不早于重算开始的新预计结束后恢复正常口径。
+
+沿用既有请求字段（`POST /api/registrations`，`action=estimate`）与错误结构（`{error, message, ...}`），无需新增接口。以下用默认种子数据（`L1 19:00-19:05 → S1 19:05-19:08 → L2/S2 …`，账号见第三节）演示。
+
+### 1. 正常登记预计结束（按原计划）
+
+```bash
+# 音响执行登录
+curl -c sound.jar -X POST http://localhost:3000/api/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"sound","password":"sound123"}'
+
+# 取当前执行版 id（GET /api/live 的 id；下例记为 1）与 S1 的 cueRef（种子数据为 2）、rowVer（初始 1）
+# S1 计划 19:05 开始、时长 3 分；登记预计结束 19:08（合法：不早于原计划开始）
+curl -b sound.jar -X POST http://localhost:3000/api/registrations \
+  -H 'Content-Type: application/json' \
+  -d '{"versionId":1,"cueRef":2,"rowVersion":1,"action":"estimate","estimatedEndText":"19:08"}'
+```
+
+### 2. 前置延误后：倒挂被标出，后继按暂算结束顺延
+
+```bash
+# 灯光执行把 L1 实际完成登记为 19:10（延误）：start 19:00 → complete 19:10
+curl -b light.jar -X POST http://localhost:3000/api/registrations \
+  -H 'Content-Type: application/json' \
+  -d '{"versionId":1,"cueRef":1,"rowVersion":1,"action":"start","time":"19:00"}'
+curl -b light.jar -X POST http://localhost:3000/api/registrations \
+  -H 'Content-Type: application/json' \
+  -d '{"versionId":1,"cueRef":1,"rowVersion":2,"action":"complete","time":"19:10"}'
+
+# GET /api/live（任一已登录账号）中 S1 行（节选）：
+# {
+#   "code":"S1","status":"PENDING",
+#   "schedStartText":"19:10","schedEndText":"19:13",   ← 重算结束=重算开始19:10+时长3分（暂算）
+#   "estimatedEnd":1148,"estimatedEndText":"19:08",    ← 原登记预计结束保留
+#   "estimatedEndStale":true,                           ← 原预计结束已过期（倒挂）
+#   "schedEndProvisional":true,                         ← 重算结束为暂算值
+#   "rowVer":2,                                         ← 行版本仍是 S1 自己登记时的版本（未因倒挂推进）
+#   "delayed":true
+# }
+# 后继 L2：schedStartText="19:13"（取 S1 暂算结束，不会倒退到旧预计 19:08）；L3 随之 19:21 起。
+# conflicts / resourceAlerts 与「来源」解释均以同一暂算结束 19:13 计算。
+curl -b sound.jar http://localhost:3000/api/live
+```
+
+### 3. 排期来源解释：倒挂前置标明「预计结束已过期·暂算」
+
+```bash
+# 查 L2（cueRef=4）的排期开始来源
+curl -b sm.jar http://localhost:3000/api/versions/1/cues/4/explain
+# constraints[0]（直接前置 S1）节选：
+# {
+#   "code":"S1","endText":"19:13",
+#   "endSource":"estimated-stale",
+#   "endSourceLabel":"预计结束已过期·暂算",
+#   "estimatedEndStale":true,
+#   "endDetail":"原登记预计结束 19:08 已早于重算开始 19:10（已过期，保留原登记），暂以重算开始 + 时长 3 分算得结束 19:13",
+#   "start": { ... }   ← 继续向下追溯 S1 重算开始 19:10 来自前置 L1 的实际完成
+# }
+# 直接打开 S1 自己的来源时，cue 节含 "estimatedEndStale":true 与暂算结束说明横幅。
+```
+
+### 4. 倒挂重报：早于提交时重算开始 → 400 整体拒绝
+
+```bash
+# 行版本仍为 2（倒挂不推进版本）；用旧时刻 19:08 重报
+curl -b sound.jar -i -X POST http://localhost:3000/api/registrations \
+  -H 'Content-Type: application/json' \
+  -d '{"versionId":1,"cueRef":2,"rowVersion":2,"action":"estimate","estimatedEndText":"19:08"}'
+# HTTP/1.1 400 Bad Request
+# {"error":"BAD_INPUT",
+#  "message":"预计结束 19:08 早于当前重算开始（原预计结束已过期） 19:10，请填写不早于该时刻的预计结束",
+#  "lowerBoundText":"19:10","lowerBound":1150}
+#
+# 整体拒绝的可观察结果（同一事务回滚）：
+# - GET /api/live：S1 的 estimatedEndText 仍为 "19:08"、estimatedEndStale=true、rowVer 仍为 2；
+# - GET /api/live/change-notices：不新增任何顺延确认记录（total 不增加）。
+```
+
+### 5. 合法新预计结束：恢复正常口径
+
+```bash
+# 新预计结束 19:13 不早于提交时重算开始 19:10 → 成功，行版本 +1，倒挂标记清除
+curl -b sound.jar -X POST http://localhost:3000/api/registrations \
+  -H 'Content-Type: application/json' \
+  -d '{"versionId":1,"cueRef":2,"rowVersion":2,"action":"estimate","estimatedEndText":"19:13"}'
+# S1 行：schedStartText="19:10","schedEndText":"19:13",
+#        estimatedEndText="19:13","estimatedEndStale":false,"schedEndProvisional":false,"rowVer":3
+# 后继 L2：19:13 起、S2：19:13 起；再次查来源，S1 的结束来源恢复为「预计结束（登记的预计结束 19:13）」。
+```
+
+### 6. 顺延预演中查看倒挂（只读）
+
+```bash
+# 倒挂状态下打开预演（接口与字段沿用第十二节），不传 S1 的假设时，
+# 基线列 baselineEndText=19:13、baselineEndProvisional=true、
+# baselineEstimatedEndText="19:08"、baselineEstimatedEndStale=true。
+# 若把 S1 假设为 19:09（早于预演算出的开始 19:10）→ 400 WHATIF_INVALID 整体拒绝：
+curl -b sm.jar -X POST http://localhost:3000/api/live/whatif \
+  -H 'Content-Type: application/json' \
+  -d '{"versionId":1,
+       "rows":[{"cueRef":1,"rowVersion":3},{"cueRef":2,"rowVersion":2},{"cueRef":3,"rowVersion":1},{"cueRef":4,"rowVersion":1},{"cueRef":5,"rowVersion":1},{"cueRef":6,"rowVersion":1}],
+       "assumptions":[{"cueRef":2,"estimatedEndText":"19:09"}]}'
+# {"error":"WHATIF_INVALID","message":"存在 1 项无效假设，已整体拒绝，未返回预演结果",
+#  "items":[{"cueRef":2,"code":"S1","reason":"「S1」未开始：假设预计结束 19:09 早于预演算出的开始 19:10"}]}
+```
+
+### 7. 既有规则不受影响
+
+- **已开始 / 已完成 / 已跳过项**：不进入倒挂判定。已开始未完成项沿用中断顺延口径（下界仍为实际开始）；已完成项实际登记永不改变；已跳过项无待执行时段、预计结束已在跳过时清除。
+- **已发布计划**：倒挂与重报都不改 `published_cues`；舞监更正仍按既有校验（保留的预计结束不得早于实际开始，无实际开始则为原计划开始），若更正后再次倒挂，现场同样按暂算口径标出。
+- **停排**：停排仍清除全部未开始项预计结束；恢复后无预计结束即按重算开始 + 时长推算，不会出现倒挂标记。
+- **页面**：现场页与历史回看页对倒挂行显示划线的旧预计结束 +「已过期」、重算结束列「⏱ 暂算结束」；本岗位倒挂行的登记按钮变为「重报预计」并预填暂算结束时刻；非法重报沿现有错误红条提示，不刷新掉其他操作结果。

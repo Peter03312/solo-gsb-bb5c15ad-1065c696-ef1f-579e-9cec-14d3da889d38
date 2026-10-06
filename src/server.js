@@ -1693,10 +1693,26 @@ app.post('/api/registrations', requireAuth, (req, res, next) => {
         if (reg.actual_end !== null) throw new ApiError(400, 'BAD_STATE', `「${pc.code}」已完成，不能再修改预计结束`);
         const ee = parseOptTime(req.body.estimatedEndText);
         if (ee === null) throw new ApiError(400, 'BAD_INPUT', '请填写预计结束时间（HH:MM）');
-        const lower = reg.actual_start !== null ? reg.actual_start : pc.planned_start;
+        let lower, lowerLabel;
+        if (reg.actual_start !== null) {
+          // 已开始未完成：不得早于实际开始（中断顺延口径不变）
+          lower = reg.actual_start;
+          lowerLabel = '实际开始';
+        } else {
+          // 未开始：下界为提交时该项的重算开始（含前置延误顺延与停排托底）。
+          // 倒挂时旧预计结束已过期、现场暂以重算开始+时长暂算结束；新预计结束若早于重算开始，
+          // 会再次倒挂，整体拒绝（同事务，不产生登记也不产生顺延确认记录）。
+          const { cues: liveCues, deps: liveDeps, regMap: liveRegs, interruptions: liveSegs } = versionInputs(versionId);
+          const liveRow = computeLive(liveCues, liveDeps, liveRegs, liveSegs);
+          const liveCue = liveRow.cues.find((x) => x.id === cueRef);
+          if (!liveCue) throw new ApiError(500, 'INTERNAL', `「${pc.code}」现场重算结果缺失，请刷新后重试`);
+          lower = liveCue.schedStart;
+          lowerLabel = liveCue.estimatedEndStale ? '当前重算开始（原预计结束已过期）' : '当前重算开始';
+        }
         if (ee < lower) {
           throw new ApiError(400, 'BAD_INPUT',
-            `预计结束 ${minToTime(ee)} 早于${reg.actual_start !== null ? '实际开始' : '原计划开始'} ${minToTime(lower)}`);
+            `预计结束 ${minToTime(ee)} 早于${lowerLabel} ${minToTime(lower)}，请填写不早于该时刻的预计结束`,
+            { lowerBoundText: minToTime(lower), lowerBound: lower });
         }
         patch = { estimated_end: ee };
       } else if (action === 'complete') {

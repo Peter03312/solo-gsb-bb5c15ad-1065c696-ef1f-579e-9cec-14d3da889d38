@@ -212,6 +212,14 @@ tr.interrupted-row:hover td { background: #f4e8ff; }
 .pause-count-active { background: #f0e3fb; border: 1px solid #c9a3ea; border-radius: 6px; padding: 0 6px; }
 tr.pause-row-active td { background: #faf4ff; }
 
+/* 预计结束倒挂：原预计结束过期（划线）+ 重算结束暂算标注 */
+.est-stale { color: #b0413a; }
+.est-stale s { color: #9a6f6b; }
+.est-stale-tag { display: inline-block; margin-left: 4px; border-radius: 6px; padding: 0 6px; font-size: 11px; font-weight: 600; background: #fdecea; color: #b0413a; border: 1px solid #f3b9b3; white-space: nowrap; }
+.est-provisional { font-size: 11px; color: #9a6200; font-weight: 600; }
+.src-tag.src-estimated-stale { background: #fdecea; color: #b0413a; border: 1px solid #f3b9b3; }
+.explain-stale-banner { margin: 8px 0; padding: 8px 10px; border-radius: 8px; background: #fdf3e7; border: 1px solid #f0c98a; color: #7a4e05; font-size: 13px; line-height: 1.7; }
+
 /* 联排共享资源 */
 .resource-form { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
 .resource-form input[name="name"] { flex: 1 1 200px; }
