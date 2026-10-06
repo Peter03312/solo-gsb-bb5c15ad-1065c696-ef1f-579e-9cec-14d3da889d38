@@ -206,6 +206,17 @@ tr.wi-assumed-row td { border-left: 3px solid #2f6fed; }
 .pause-locked { display: inline-block; color: #5b2a8f; background: #f0e3fb; border: 1px solid #c9a3ea; border-radius: 6px; padding: 1px 8px; font-size: 12px; font-weight: 600; }
 .pause-hold { font-size: 11px; color: #5b2a8f; }
 .pause-shift { font-size: 11px; color: #b3541e; }
+
+/* 预计结束倒挂：原预计已过期 + 暂算结束 */
+.prov-end-tag { font-size: 11px; color: #9a6a00; font-weight: 600; }
+.stale-est { display: inline-block; }
+.stale-est s { color: #9aa3ad; }
+.stale-est-tag { margin-top: 2px; font-size: 11px; color: #8a5a00; background: #fdf3dc; border: 1px solid #e7c77a; border-radius: 6px; padding: 0 6px; white-space: normal; display: inline-block; }
+.stale-est-hint { flex-basis: 100%; font-size: 11px; color: #8a5a00; }
+.stale-banner { background: #fdf6e6; border: 1px solid #e3c478; color: #6e4f08; border-radius: 10px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px; }
+.stale-banner ul { margin: 6px 0 0; padding-left: 18px; }
+.stale-banner li { margin: 3px 0; line-height: 1.6; }
+.src-stale-estimate { background: #fdf3dc; color: #8a5a00; border: 1px solid #e7c77a; }
 tr.interrupted-row td { background: #faf4ff; }
 tr.interrupted-row:hover td { background: #f4e8ff; }
 .pause-count { color: #5b2a8f; font-weight: 600; }

@@ -790,6 +790,22 @@ function pauseShiftTag(c) {
     : '';
 }
 
+// 倒挂：重算结束为「重算开始 + 计划时长」的暂算值（原预计结束已过期，后继顺延/冲突/资源告警均用此值）
+function provisionalEndTag(c) {
+  return c.provisionalEnd
+    ? `<div class="prov-end-tag" title="临时结束 = 重算开始 + 该项计划时长；后继顺延、岗位冲突、共享资源告警与排期来源均以此暂算结束为准，待重新填报预计结束">⏱ 暂算结束</div>`
+    : '';
+}
+
+// 倒挂：原登记预计结束已早于重算开始，标明已过期（原值保留、行版本不变、不参与顺延）
+function staleEstimateCell(c) {
+  if (!c.estimatedEndText) return '—';
+  if (c.estimatedEndStale) {
+    return `<span class="stale-est" title="原登记预计结束 ${c.estimatedEndText} 已早于当前重算开始，已过期：保留原登记与行版本，不参与顺延；当前结束按重算开始 + 时长暂算为 ${c.schedEndText}，请重新填报">${c.estimatedEndText}<div class="stale-est-tag">⚠ 已过期（暂算 ${esc(c.schedEndText)}）</div></span>`;
+  }
+  return c.estimatedEndText;
+}
+
 function fmtInterruption(it) {
   if (it.active) {
     return `<strong class="mono">${esc(it.pauseText)}</strong> 起停排中｜原因：${esc(it.reason)}｜${esc(it.pausedBy)} 于 ${esc(it.pausedAt)} 登记`;
@@ -872,6 +888,18 @@ function renderConflicts(conflicts) {
   }</ul></div>`;
 }
 
+// 倒挂提示：未开始项原登记预计结束已早于重算开始（已过期），重算结束为暂算值；后继顺延/冲突/资源告警均用暂算结束
+function renderStaleEstimates(v) {
+  const box = $('#live-stale-estimates');
+  if (!box) return;
+  const stale = (v?.cues || []).filter((c) => c.estimatedEndStale);
+  if (!stale.length) { box.innerHTML = ''; return; }
+  box.innerHTML = `<div class="stale-banner"><strong>⚠ 预计结束已过期 ${stale.length} 项（倒挂）：</strong>
+    <div class="muted">原登记预计结束与行版本保留，但已早于当前重算开始、不参与顺延；当前结束按「重算开始 + 计划时长」暂算，后继顺延、岗位冲突、共享资源告警与排期来源均使用同一暂算结束。请相应执行岗位重新填报预计结束（不得早于重算开始）。</div>
+    <ul>${stale.map((c) => `<li>「${esc(c.code)}」（${esc(c.position)}）：原预计 <s class="mono">${esc(c.estimatedEndText)}</s> 已过期，重算开始 <strong class="mono">${esc(c.schedStartText)}</strong>，暂算结束 <strong class="mono">${esc(c.schedEndText)}</strong></li>`).join('')}</ul>
+  </div>`;
+}
+
 // 现场共享资源超额告警（不阻止登记；跳过项不占用，仅已完成项构成的超额不展示）
 function renderResourceAlerts(alerts) {
   const box = $('#live-resource-alerts');
@@ -899,12 +927,14 @@ function renderLive() {
     $('#review-panel').hidden = true;
     $('#live-tbody').innerHTML = '';
     $('#live-resource-alerts').innerHTML = '';
+    if ($('#live-stale-estimates')) $('#live-stale-estimates').innerHTML = '';
     return;
   }
   $('#live-meta').innerHTML =
     `<strong>第 ${v.versionNo} 版</strong>　${esc(v.note)}　<span class="muted">发布于 ${esc(v.createdAt)}</span>
      ${v.isLatest ? '<span class="latest-tag">当前执行版本</span>' : '<span class="latest-tag" style="background:#999">非最新版本</span>'}`;
   renderConflicts(v.conflicts);
+  renderStaleEstimates(v);
   renderResourceAlerts(v.resourceAlerts);
   renderInterruptionBanner(v);
   renderInterruptionPanel(v);
@@ -958,12 +988,12 @@ function renderLive() {
       <td class="mono">${c.plannedStartText} - ${minText(c.plannedStart + c.duration)}</td>
       ${liveResourceCell(c)}
       <td class="mono">${skipped ? '—' : `${c.schedStartText}${delayed}${pauseHoldTag(c)}`}<div>${explainBtn(c, 'live')}</div></td>
-      <td class="mono">${skipped ? '—' : `${c.schedEndText}${pauseShiftTag(c)}`}</td>
+      <td class="mono">${skipped ? '—' : `${c.schedEndText}${pauseShiftTag(c)}${provisionalEndTag(c)}`}</td>
       <td>${statusBadge(c.status)}<div class="muted">v${c.rowVer}</div></td>
       <td>${releaseCell(c)}</td>
       <td class="mono">${skipped ? '—' : (c.actualStartText ?? '—')}${handoverTag(c)}${skipTag(c)}</td>
       <td class="mono">${skipped ? '—' : (c.actualEndText ?? '—')}</td>
-      <td class="mono">${skipped ? '—' : (c.estimatedEndText ?? '—')}</td>
+      <td class="mono">${skipped ? '—' : staleEstimateCell(c)}</td>
       <td>${reg}</td>
     </tr>`;
   }).join('');
@@ -1117,8 +1147,9 @@ function renderRegControls(c) {
       </div>
       ${signoffBtn}
       <div class="reg-actions">
-        <input type="time" data-role="est-time" />
+        <input type="time" data-role="est-time" value="${c.estimatedEndStale ? (c.schedEndText ?? '') : ''}" title="${c.estimatedEndStale ? `原预计结束 ${c.estimatedEndText} 已过期（早于重算开始），请重新填报，不早于重算开始 ${c.schedStartText}` : ''}" />
         <button class="ghost tiny" data-reg="estimate" ${common}>预计结束</button>
+        ${c.estimatedEndStale ? '<div class="stale-est-hint">⚠ 原预计已过期，重报不早于 ' + esc(c.schedStartText) + '</div>' : ''}
       </div>`;
   } else if (c.status === 'RUNNING') {
     buttons = `
@@ -1482,6 +1513,9 @@ function renderExplainHtml(data) {
   }
   html += renderSkippedPreds(data.skippedPreds);
   html += renderOtherPreds(data.otherPreds);
+  if (data.staleNotice) {
+    html += `<div class="stale-banner" style="margin-top:10px">⚠ <strong>预计结束已过期（倒挂）</strong><div>${esc(data.staleNotice)}</div></div>`;
+  }
   html += `<div class="muted">来源链与第 ${data.versionNo} 版现场重算结果一致；登记、更正或跳过后刷新即可看到最新解释。已跳过前置不构成约束；本查询不改动登记与已发布计划。</div>`;
   return html;
 }
@@ -1545,16 +1579,19 @@ function openWhatIf(prefillIds = []) {
   const preSet = new Set(prefillIds);
   const rows = eligible.map((c) => {
     const saved = state.whatifInputs.get(c.id);
-    const val = saved ?? (preSet.has(c.id) ? (c.estimatedEndText ?? c.schedEndText) : '');
+    // 倒挂（原预计已过期）时预填暂算结束，避免直接沿用过期值
+    const val = saved ?? (preSet.has(c.id) ? (c.estimatedEndStale ? c.schedEndText : (c.estimatedEndText ?? c.schedEndText)) : '');
     const cur = c.status === 'RUNNING'
       ? `实际开始 ${esc(c.actualStartText)}｜预计结束 ${esc(c.estimatedEndText ?? '—')}`
-      : `预计结束 ${esc(c.estimatedEndText ?? '—')}`;
+      : c.estimatedEndStale
+        ? `原预计 <s>${esc(c.estimatedEndText)}</s> 已过期｜暂算结束 ${esc(c.schedEndText)}（重算开始 ${esc(c.schedStartText)}）`
+        : `预计结束 ${esc(c.estimatedEndText ?? '—')}`;
     return `<tr class="${preSet.has(c.id) ? 'wi-prefill' : ''}">
       <td><strong>${esc(c.code)}</strong></td>
       <td>${esc(c.title)}</td>
       <td>${esc(c.position)}</td>
       <td>${statusBadge(c.status)}</td>
-      <td class="mono">${esc(c.schedStartText)} - ${esc(c.schedEndText)}</td>
+      <td class="mono">${esc(c.schedStartText)} - ${esc(c.schedEndText)}${c.provisionalEnd ? '<div class="prov-end-tag">⏱ 暂算结束</div>' : ''}</td>
       <td class="muted">${cur}<div>行版本 v${c.rowVer}</div></td>
       <td><input type="time" data-wi-cue="${c.id}" class="wi-time" value="${esc(val ?? '')}" />
         <div class="muted">假设预计结束（留空=不假设）</div></td>
@@ -2204,12 +2241,12 @@ function renderDetail() {
         <td class="mono">${c.plannedStartText} - ${minText(c.plannedStart + c.duration)}</td>
         ${liveResourceCell(c)}
         <td class="mono">${skipped ? '—' : `${c.schedStartText}${c.delayed ? '<div class="delayed">顺延</div>' : ''}${pauseHoldTag(c)}`}<div>${explainBtn(c, 'detail')}</div></td>
-        <td class="mono">${skipped ? '—' : `${c.schedEndText}${pauseShiftTag(c)}`}</td>
+        <td class="mono">${skipped ? '—' : `${c.schedEndText}${pauseShiftTag(c)}${provisionalEndTag(c)}`}</td>
         <td>${statusBadge(c.status)}</td>
         <td>${releaseCell(c)}</td>
         <td class="mono">${skipped ? '—' : (c.actualStartText ?? '—')}${handoverTag(c)}${skipTag(c)}</td>
         <td class="mono">${skipped ? '—' : (c.actualEndText ?? '—')}</td>
-        <td class="mono">${skipped ? '—' : (c.estimatedEndText ?? '—')}</td>
+        <td class="mono">${skipped ? '—' : staleEstimateCell(c)}</td>
         <td class="muted">${skipped ? '—' : (c.updatedBy ? esc(c.updatedBy) + '<br>' + esc(c.updatedAt || '') : '—')}</td>
         <td>${state.me?.role === 'sm' ? (skipViewBtn || renderCorrectionCell(c, v, 'detail')) : ''}</td>
       </tr>`;

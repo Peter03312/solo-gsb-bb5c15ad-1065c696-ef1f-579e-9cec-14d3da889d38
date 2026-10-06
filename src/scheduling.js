@@ -353,6 +353,9 @@ function interruptionHoldMinute(segments) {
  *
  * 舞监标记为跳过的项：状态 SKIPPED，不产生待执行时段，不参与前置顺延与岗位冲突，
  * 其他项仍按现有前置与登记规则重算。
+ * 未开始项预计结束倒挂：前置延误使重算开始晚于该项原登记预计结束时，原登记与行版本保留、
+ * estimatedEndStale 标明预计结束已过期，暂以「重算开始 + 该项计划时长」为临时结束（provisionalEnd）；
+ * 后继顺延、岗位冲突、共享资源告警与排期来源解释统一使用该临时结束（不沿用旧结束，避免后继排期倒退）。
  * 联排中断规则：
  * - 实际登记时间（实际开始/完成）永不改变；已完成项不做顺延；
  * - 已开始未完成项：按时长推算结束与停排前填写的预计结束顺延中断重叠分钟，且不得早于最近恢复时刻；
@@ -395,7 +398,7 @@ function computeLive(publishedCues, deps, regMap, interruptions) {
     const ee = r.estimatedEnd ?? null;
     const skipped = r.skipped === true || r.skipped === 1;
 
-    let status, schedStart, schedEnd, effStart, pauseShift = 0, pauseHold = null;
+    let status, schedStart, schedEnd, effStart, pauseShift = 0, pauseHold = null, estimatedEndStale = false;
 
     if (skipped) {
       // 已跳过：只展示，不产生待执行时段；其前置约束对后项不再生效（前置不可执行导致本项一同跳过）
@@ -430,8 +433,17 @@ function computeLive(publishedCues, deps, regMap, interruptions) {
       pauseHold = held ? start : null;
       effStart = start;
       schedStart = start;
-      // 未开始项原有预计结束已在停排时清除：无预计结束时按重算开始 + 时长推算
-      schedEnd = ee !== null ? ee : start + cue.duration;
+      // 预计结束倒挂：前置延误使重算开始晚于原登记预计结束时，保留原登记与行版本，
+      // 标明该预计结束已过期（estimatedEndStale），暂以「重算开始 + 该项计划时长」作为临时结束；
+      // 后继顺延、同岗位冲突、共享资源告警、排期来源均统一使用该临时结束（schedEnd），
+      // 不会再沿用旧结束时刻导致后继排期倒退。执行人重新填报有效预计结束后恢复正常口径。
+      if (ee !== null && ee < start) {
+        estimatedEndStale = true;
+        schedEnd = start + cue.duration;
+      } else {
+        // 未开始项原有预计结束已在停排时清除：无预计结束时按重算开始 + 时长推算
+        schedEnd = ee !== null ? ee : start + cue.duration;
+      }
     }
 
     calc.set(id, {
@@ -440,9 +452,13 @@ function computeLive(publishedCues, deps, regMap, interruptions) {
       actualStart: as,
       actualEnd: ae,
       estimatedEnd: ee,
+      estimatedEndStale: status === 'PENDING' && estimatedEndStale,
       skipped,
       schedStart,
       schedEnd,
+      // 倒挂标记：原登记预计结束已过期时，重算结束为「重算开始 + 计划时长」的暂算值；
+      // 后继顺延 / 岗位冲突 / 资源告警 / 排期来源统一使用 schedEnd（该暂算值）
+      provisionalEnd: status === 'PENDING' && estimatedEndStale,
       pauseShift,
       pauseHold,
       interrupted: pauseShift > 0 || pauseHold !== null,
@@ -552,10 +568,18 @@ function explainSchedule(publishedCues, deps, regMap, cueRef, skipReasons, inter
       node.endSource = 'actual';
       node.endSourceLabel = '实际完成';
       node.endDetail = `实际开始 ${minToTime(p.actualStart)}，实际完成 ${minToTime(p.actualEnd)}`;
-    } else if (p.estimatedEnd !== null && p.estimatedEnd !== undefined) {
+    } else if (p.estimatedEnd !== null && p.estimatedEnd !== undefined && !p.estimatedEndStale) {
       node.endSource = 'estimated';
       node.endSourceLabel = '预计结束';
       node.endDetail = `${p.status === 'RUNNING' ? '已开始，' : ''}登记的预计结束 ${minToTime(p.estimatedEnd)}${p.pauseShift > 0 ? `，联排中断顺延后为 ${minToTime(p.schedEnd)}` : ''}`;
+    } else if (p.estimatedEndStale) {
+      // 倒挂：原登记预计结束已早于重算开始（已过期，保留原值不参与顺延），约束后继的是临时结束
+      node.endSource = 'stale-estimate';
+      node.endSourceLabel = '原预计已过期·按时长暂算';
+      node.estimatedEndStale = true;
+      node.staleEstimatedEndText = minToTime(p.estimatedEnd);
+      node.endDetail = `前置延误使重算开始 ${minToTime(p.schedStart)} 晚于原登记预计结束 ${minToTime(p.estimatedEnd)}，该预计结束已过期；临时结束按重算开始 + 时长 ${p.duration} 分暂算为 ${minToTime(p.schedEnd)}，待执行人重新填报`;
+      if (!stack.includes(p.id)) node.start = startExplain(p, stack.concat(p.id));
     } else if (p.status === 'RUNNING') {
       node.endSource = 'duration';
       node.endSourceLabel = '按时长推算';
@@ -626,6 +650,12 @@ function explainSchedule(publishedCues, deps, regMap, cueRef, skipReasons, inter
     : `「${target.code}」重算开始 ${minToTime(target.schedStart)}，较原计划 ${minToTime(target.plannedStart)} 顺延 ${delayMinutes} 分钟；`
       + `达到最终约束时刻 ${minToTime(target.schedStart)} 的直接前置共 ${start.constraints.length} 条，全部展示`;
 
+  // 倒挂：目标项自身原登记预计结束已过期，约束后继/展示用的是暂算结束，须明确提示
+  const staleNotice = target.estimatedEndStale
+    ? `「${target.code}」原登记预计结束 ${minToTime(target.estimatedEnd)} 已早于重算开始 ${minToTime(target.schedStart)}，该预计结束已过期；`
+      + `当前结束按重算开始 + 计划时长 ${target.duration} 分暂算为 ${minToTime(target.schedEnd)}，后继顺延、岗位冲突与资源告警均以此为准，待执行人重新填报预计结束`
+    : null;
+
   return {
     applicable: true,
     cue: {
@@ -639,6 +669,9 @@ function explainSchedule(publishedCues, deps, regMap, cueRef, skipReasons, inter
       schedEnd: target.schedEnd,
       schedEndText: minToTime(target.schedEnd),
       estimatedEndText: minToTime(target.estimatedEnd),
+      estimatedEndStale: target.estimatedEndStale === true,
+      provisionalEnd: target.provisionalEnd === true,
+      staleEstimatedEndText: minToTime(target.estimatedEnd),
       delayed: target.delayed,
     },
     baselineText: minToTime(target.plannedStart),
@@ -650,6 +683,7 @@ function explainSchedule(publishedCues, deps, regMap, cueRef, skipReasons, inter
     skippedPreds: start.skippedPreds,
     otherPreds: start.otherPreds,
     interruptionHold,
+    staleNotice,
     summary,
   };
 }
@@ -773,6 +807,12 @@ function simulateWhatIf(publishedCues, deps, regMap, assumptions, interruptions,
         baselineEndText: isActive ? minToTime(b.schedEnd) : null,
         scenarioStartText: isActive ? minToTime(c.schedStart) : null,
         scenarioEndText: isActive ? minToTime(c.schedEnd) : null,
+        // 倒挂标记随基线 / 预演结果分别给出（未开始项原预计结束早于对应重算开始即为过期）
+        baselineEstimatedEndText: isActive ? minToTime(b.estimatedEnd) : null,
+        scenarioEstimatedEndText: isActive ? minToTime(c.estimatedEnd) : null,
+        baselineEstimatedEndStale: isActive && b.estimatedEndStale === true,
+        scenarioEstimatedEndStale: isActive && c.estimatedEndStale === true,
+        provisionalEnd: isActive && c.provisionalEnd === true,
         startDeltaMinutes: startDelta,
         endDeltaMinutes: endDelta,
         changed: isActive && (startDelta !== 0 || endDelta !== 0),

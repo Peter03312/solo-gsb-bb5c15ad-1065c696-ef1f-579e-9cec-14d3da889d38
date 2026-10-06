@@ -498,6 +498,16 @@ function pendingStartMap(versionId) {
   return map;
 }
 
+// 某提示项「提交时」现场重算口径下的重算开始时刻（未开始项）：用于执行人重新填报预计结束的下界校验，
+// 与 computeLive（后继顺延、岗位冲突、资源告警、排期来源）完全同源；非未开始项返回 null。
+function recomputedStartOf(versionId, cueRef) {
+  const { cues, deps, regMap, interruptions } = versionInputs(versionId);
+  const live = computeLive(cues, deps, regMap, interruptions);
+  if (live.orderProblem) return null;
+  const c = live.cues.find((x) => x.id === cueRef);
+  return c && c.status === 'PENDING' ? c.schedStart : null;
+}
+
 /**
  * 同一次操作前后对照，为重算开始时刻发生变化、且操作后仍为「未开始、未跳过」的提示项分别留一条待确认记录。
  * 必须在触发操作所在事务内、且在所有登记/停排写入完成之后调用；事务随后失败回滚时记录一并回滚，不留痕。
@@ -699,6 +709,11 @@ function versionPayload(versionRow) {
       actualStartText: minToTime(c.actualStart),
       actualEndText: minToTime(c.actualEnd),
       estimatedEndText: minToTime(c.estimatedEnd),
+      // 预计结束倒挂：原登记预计结束已早于重算开始（过期、保留不用于顺延）；重算结束为「重算开始+时长」的暂算值
+      estimatedEndStale: c.estimatedEndStale === true,
+      provisionalEnd: c.provisionalEnd === true,
+      staleEstimatedEndText: minToTime(c.estimatedEnd),
+      provisionalEndText: minToTime(c.schedEnd),
       // 联排中断对该项的影响：已开始项推算/预计结束顺延分钟；未开始项被「不得早于」最近恢复/停排时刻托住
       interrupted: c.interrupted === true,
       pauseShiftMinutes: c.pauseShift || 0,
@@ -1693,10 +1708,22 @@ app.post('/api/registrations', requireAuth, (req, res, next) => {
         if (reg.actual_end !== null) throw new ApiError(400, 'BAD_STATE', `「${pc.code}」已完成，不能再修改预计结束`);
         const ee = parseOptTime(req.body.estimatedEndText);
         if (ee === null) throw new ApiError(400, 'BAD_INPUT', '请填写预计结束时间（HH:MM）');
-        const lower = reg.actual_start !== null ? reg.actual_start : pc.planned_start;
-        if (ee < lower) {
-          throw new ApiError(400, 'BAD_INPUT',
-            `预计结束 ${minToTime(ee)} 早于${reg.actual_start !== null ? '实际开始' : '原计划开始'} ${minToTime(lower)}`);
+        if (reg.actual_start !== null) {
+          // 已开始未完成：不得早于实际开始（既有规则）
+          if (ee < reg.actual_start) {
+            throw new ApiError(400, 'BAD_INPUT',
+              `预计结束 ${minToTime(ee)} 早于实际开始 ${minToTime(reg.actual_start)}`);
+          }
+        } else {
+          // 未开始：重新填报的预计结束不得早于「提交时」该项重算开始（与现场顺延/冲突/资源告警/来源同源）。
+          // 倒挂（原预计结束已过期）时同样以此为下界；不合法整体拒绝，不产生登记或顺延确认记录。
+          const schedStart = recomputedStartOf(versionId, cueRef);
+          const lower = schedStart !== null ? schedStart : pc.planned_start;
+          if (ee < lower) {
+            throw new ApiError(400, 'BAD_INPUT',
+              `预计结束 ${minToTime(ee)} 早于该项当前重算开始 ${minToTime(lower)}（前置延误已顺延），请填写不早于 ${minToTime(lower)} 的预计结束`,
+              { cueRef, code: pc.code, schedStartText: minToTime(lower) });
+          }
         }
         patch = { estimated_end: ee };
       } else if (action === 'complete') {
@@ -1830,12 +1857,21 @@ app.post('/api/registrations/corrections', requireSM, (req, res, next) => {
           `更正后的实际完成 ${minToTime(next.actual_end)} 落入联排停排区间，停排期间没有实际执行，请改为停排前或恢复后的时刻`);
       }
 
-      // 保留的预计结束不得早于实际开始（无实际开始则为原计划开始）
+      // 保留/更正后的预计结束：有实际开始（已开始项）时不得早于实际开始；
+      // 未开始项不得早于「提交时」该项重算开始（与执行岗位重新填报同一口径，避免舞监更正重新造成倒挂）
       if (next.estimated_end !== null) {
-        const lower = next.actual_start !== null ? next.actual_start : pc.planned_start;
+        let lower, lowerLabel;
+        if (next.actual_start !== null) {
+          lower = next.actual_start;
+          lowerLabel = '实际开始';
+        } else {
+          const schedStart = recomputedStartOf(versionId, cueRef);
+          lower = schedStart !== null ? schedStart : pc.planned_start;
+          lowerLabel = lower !== pc.planned_start ? '当前重算开始' : '原计划开始';
+        }
         if (next.estimated_end < lower) {
           throw new ApiError(400, 'BAD_INPUT',
-            `保留的预计结束 ${minToTime(next.estimated_end)} 早于${next.actual_start !== null ? '实际开始' : '原计划开始'} ${minToTime(lower)}，请一并更正或清除预计结束`);
+            `保留的预计结束 ${minToTime(next.estimated_end)} 早于${lowerLabel} ${minToTime(lower)}，请一并更正或清除预计结束`);
         }
       }
 

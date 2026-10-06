@@ -154,6 +154,7 @@
         <div id="live-meta" class="panel"></div>
         <div id="live-interruption-banner"></div>
         <div id="live-conflicts"></div>
+        <div id="live-stale-estimates"></div>
         <div id="live-resource-alerts"></div>
         <div id="live-deputy-banner"></div>
         <div id="live-change-notices"></div>
@@ -234,6 +235,13 @@
             顺延导致的岗位冲突以红条提示。点击「来源」可查看任一提示项排期开始时刻如何形成：
             以原计划开始为基线，达到最终约束时刻的直接前置全部列出，并逐层标明实际完成 / 预计结束 / 按时长推算；
             已跳过前置不构成约束，原计划本身决定开始时明确显示无需顺延。
+          </p>
+          <p class="muted" id="stale-rule-hint">
+            <strong>预计结束倒挂：</strong>前置延误使某<strong>未开始</strong>项的重算开始晚于其原登记预计结束时，
+            原预计结束<strong>保留但标记已过期</strong>（行版本不变、不参与顺延），当前结束按<strong>重算开始 + 该项计划时长暂算</strong>；
+            后继顺延、岗位冲突、共享资源告警与排期来源均使用同一暂算结束，不会出现后继排期倒退。
+            执行岗位重新填报预计结束时<strong>不得早于提交时该项重算开始</strong>，不合法请求整体拒绝、不产生登记或顺延确认记录；
+            有效新预计结束填报后恢复正常口径。已开始、已完成、已跳过项与已发布计划按既有规则处理。
           </p>
           <p class="muted" id="sm-correct-hint" hidden>
             舞监可对<strong>当前执行版本</strong>任一行的实际开始 / 实际完成 / 预计结束进行一次单项更正或清除并填写原因；
